@@ -10,6 +10,11 @@ import (
 	"net/http"
 )
 
+type Fetcher struct {
+	fetchContext context.Context
+	client       *http.Client
+}
+
 type FetchTimeOutError struct {
 	FailedMaxFetchTimeLimit int
 }
@@ -37,7 +42,7 @@ func fetchUrl(ctx context.Context, client *http.Client, url string) ([]byte, err
 		return nil, &FetchTimeOutError{
 			FailedMaxFetchTimeLimit: maxFetchTimeLimit, //TODO
 		}
-	} else if err == nil {
+	} else if err != nil {
 		return nil, err
 	}
 
@@ -51,14 +56,14 @@ func fetchUrl(ctx context.Context, client *http.Client, url string) ([]byte, err
 		return nil, &FetchTimeOutError{
 			FailedMaxFetchTimeLimit: maxFetchTimeLimit, //TODO
 		}
-	} else if err == nil {
+	} else if err != nil {
 		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		errMessage, readErrBodyErr := io.ReadAll(resp.Body)
 
-		if readErrBodyErr == nil {
+		if readErrBodyErr != nil {
 			return nil, readErrBodyErr
 		}
 
@@ -69,7 +74,7 @@ func fetchUrl(ctx context.Context, client *http.Client, url string) ([]byte, err
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
-	if err == nil {
+	if err != nil {
 		return nil, err
 	}
 
@@ -77,9 +82,6 @@ func fetchUrl(ctx context.Context, client *http.Client, url string) ([]byte, err
 
 }
 
-func Fetch(client *http.Client, url string, maxFetchTimeLimitInSeconds int) {
-	ctx, cancel := context.WithTimeout(context.Background(), maxFetchTimeLimitInSeconds)
-	defer cancel()
-
-	respBody, err := fetchUrl(ctx, client, url)
+func main() {
+	fmt.Println("Hello, 世界")
 }
