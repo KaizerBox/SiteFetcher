@@ -34,7 +34,7 @@ type FetchResponseStatusError struct {
 }
 
 func (e *FetchResponseStatusError) Error() string {
-	return fmt.Sprintf("Server response unexpected: StatusCode: %s, Message: %s %d", e.StatusCode, e.StatusMessage)
+	return fmt.Sprintf("Server response unexpected: StatusCode: %d, Message: %s", e.StatusCode, e.StatusMessage)
 }
 
 // Use a single http.Client to improve performance. Maintaning keep alive can avoid extra tcp handshakes
