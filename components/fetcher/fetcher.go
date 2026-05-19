@@ -18,7 +18,29 @@ type Fetcher struct {
 	ReponseParser *ReponseParser //Per Site, each site implements this to parse the Response Result from RequestBuilder's call to website. 
 	                             //Uses the response values to determine if the condition for this item is satisfied, if it is then call a function on the Reponse Result to generate a email template 
 								 //struct that can be passed to gmailer to send.
+	ReponseFilter *ResFilter 
 
+type ReqBuilder interface {
+	//Makes request using URL and context provided in RequestParameters struct
+	FetchWithRequestParam(RequestParameters) (byte[], time.Time, error)
+}
+
+
+type ResParser interface {
+	//Parses the response body from Fetch (byte[]) and find all if it satisfies result of the query condition ItemQueryCondition. Gives ParseResponseBodyResponse if it does not error out.
+	ParseResponseMessage(byte[]) (ParseResponseBodyResult, error)
+}
+
+//Will be Implemented by ItemQueryCondition?
+type ResFilter interface {
+	PriceFilter(ParseResponseBodyResult) (bool, error)
+	StockFilter(ParseResponseBodyResult) (bool, error)
+	DiscountFilter(ParseResponseBodyResult) (bool, error)
+	FullFilter(ParseResponseBodyResponse) (bool, error)
+	GenerateEmailMessage(ParseResponseBodyResponse) (GmailMessage, error)
+	FilterAndGenerateEmailMessage(ParseResponseBodyResponse) (GmailMessage, error)
+}
+	
 type FetcherSetting struct {
 	MaxFetchTimeLimit int
 	FetcherSiteName string
@@ -62,7 +84,7 @@ func (r *requestParameters) GetRequestUrl() (string, error) {
 
 // Use a single http.Client to improve performance. Maintaning keep alive can avoid extra tcp handshakes
 // Can look to tune the http.Transport as well, such as IdleConnTimeout, MaxIdleConns, MaxIdleConnsPerHost, etc
-func (f *Fetcher) FetchWithUrl(requestParams RequestParameters) ([]byte, time.Time, error) {
+func (f *Fetcher) FetchWithRequestParam(requestParams RequestParameters) ([]byte, time.Time, error) {
 	reqStartTime = time.Now()
 	
 	reqContext, err := requestParams.GetRequestContext()
@@ -123,10 +145,10 @@ func (f *Fetcher) FetchWithUrl(requestParams RequestParameters) ([]byte, time.Ti
 
 type ParseResponseBodyResult struct {
 	ItemName string
-	OriginalPrice float32
-	DiscountAmount float32
-	PriceAfterDiscount float32
-	Stock int
+	OriginalPrice string
+	DiscountAmount string
+	PriceAfterDiscount string
+	Stock string
 	QueryExecutionTimestamp time.Time
 	QueryURL string
 }
@@ -158,6 +180,3 @@ func (i *ItemQueryCondition) ItemQueryStatus() (ItemQueryConditions, error) {
 	//creates tis based on json or other structured file format parsed for the file that stores this info
 }
 
-func (i *ItemQueryCondition) EvalResponsePriceCondition(*ParseResponseBodyResult, price) (bool) {
-	
-}
