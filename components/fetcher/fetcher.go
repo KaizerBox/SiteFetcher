@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"time"
+	"strconv"
 )
 
 /*
@@ -159,29 +160,31 @@ From website Search
 
 type Fetcher struct {
 	Client *http.Client //Overall Client shared among the sites, manage content, share connections etc.
+	RequestUrlBuilder *RequestUrlBuilder
 	RequestBuilder *RequestBuilder //Per Site, each site implements this to customize header, auth, query params, etc Sents the query, and returns the Response Result or error
 	ReponseParser *ReponseParser //Per Site, each site implements this to parse the Response Result from RequestBuilder's call to website. 
 	                             //Uses the response values to determine if the condition for this item is satisfied, if it is then call a function on the Reponse Result to generate a email template 
 								 //struct that can be passed to gmailer to send.
-	ReponseFilter *ResFilter 
+	ReponseFilter *ResponseFilter 
+}
 
-type ReqUrlBuilder interface {
+type RequestUrlBuilder interface {
 	GetProductUrl(string) (string, error)
 	//GetAvailabilityUrl(string) (string, error)
 }
 
 type ReqBuilder interface {
 	//Makes request using URL and context provided in ReqParameter interface
-	FetchWithRequestParam(ReqParameter) (byte[], time.Time, error)
+	FetchWithRequestParam(*http.Client, ReqParameter) (byte[], time.Time, error)
 }
 
-type ResParser interface {
+type ResponseParser interface {
 	//Parses the response body from Fetch (byte[]) and find all if it satisfies result of the query condition ItemQueryCondition. Gives ParseResponseBodyResponse if it does not error out.
 	ParseResponseMessage(byte[]) (ParseResponseBodyResult, error)
 }
 
 //Will be Implemented by ItemQueryCondition?
-type ResFilter interface {
+type ResponseFilter interface {
 	Filter(ParseResponseBodyResult, ItemQueryCondition) (bool, error)
 }
 
@@ -210,14 +213,38 @@ func (r *requestParameters) GetRequestUrl() (string, error) {
 	}
 }
 
-type BestBuyReqBuilder struct {
+type BestBuyRequestUrlBuilder struct {
 	Name string = "BestBuy"
 	//API Url link GET
-	DomainURL string = ""
+	DomainURL string = "https://www.bestbuy.ca/api/v2/json/product/"
 }
+
+func (b *BestBuyReqBuilder) BestBuyReqBuilder(name string, domainUrl string) (BestBuyReqBuilder, error) {
+	if len(name) == 0 {
+		return nil, errors.New("Error: name is Empty")
+	}
+	if len(domainUrl) == 0 {
+		return nil, errors.New("Error: Domain URL is Empty")
+	}
+
+	return BestBuyReqBuilder{Name: name, DomainURL:domainUrl,}, nil
+}
+
+func (b *BestBuyReqBuilder) GetProductUrl(productNum string) (string, error) {
+	val, err := strconv.Atoi(productNum)
+	if len(productNum) == 0 || err != nil {
+		return "", fmt.Errorf("Error: Product Number: %s is invalid.", productNum)
+	}
+	return b.DomainURL + productNum, nil
+}
+
+type BestBuyRequestBuilder struct {
+	Client *http.Client
+}
+
 // Use a single http.Client to improve performance. Maintaning keep alive can avoid extra tcp handshakes
 // Can look to tune the http.Transport as well, such as IdleConnTimeout, MaxIdleConns, MaxIdleConnsPerHost, etc
-func (f *Fetcher) FetchWithRequestParam(requestParams ReqParameter) ([]byte, time.Time, error) {
+func (b *BestBuyReqBuilder) FetchWithRequestParam(client *http.Client, requestParams ReqParameter) ([]byte, time.Time, error) {
 	reqStartTime = time.Now()
 	
 	reqContext, err := requestParams.GetRequestContext()
@@ -242,7 +269,7 @@ func (f *Fetcher) FetchWithRequestParam(requestParams ReqParameter) ([]byte, tim
 
 	//req.Header.Add()
 
-	resp, err := f.Client.Do(req)
+	resp, err := client.Do(req)
 
 	if errors.Is(err, context.DeadlineExceeded) {
 		return nil, &FetchTimeOutError{
@@ -276,6 +303,14 @@ func (f *Fetcher) FetchWithRequestParam(requestParams ReqParameter) ([]byte, tim
 
 }
 
+type BestBuyResponseParser {
+
+}
+
+func (b * BestBuyResponseParser) ParseResponseMessage(byte[]) (ParseResponseBodyResult, error) {
+	
+}
+
 type FetchTimeOutError struct {
 	FailedMaxFetchTimeLimit int
 }
@@ -292,7 +327,6 @@ type FetchResponseStatusError struct {
 func (e *FetchResponseStatusError) Error() string {
 	return fmt.Sprintf("Server response unexpected: StatusCode: %d, Message: %s", e.StatusCode, e.StatusMessage)
 }
-
 
 
 type ParseResponseBodyResult struct {
