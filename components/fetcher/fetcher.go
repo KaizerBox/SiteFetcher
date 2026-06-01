@@ -4,12 +4,16 @@ package fetcher
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"net/url"
+	"regexp"
 	"strconv"
+	"strings"
+	"time"
 )
 
 /*
@@ -157,15 +161,14 @@ From website Search
                     },
 */
 
-
 type Fetcher struct {
-	Client *http.Client //Overall Client shared among the sites, manage content, share connections etc.
+	Client            *http.Client //Overall Client shared among the sites, manage content, share connections etc.
 	RequestUrlBuilder *RequestUrlBuilder
-	RequestBuilder *RequestBuilder //Per Site, each site implements this to customize header, auth, query params, etc Sents the query, and returns the Response Result or error
-	ReponseParser *ReponseParser //Per Site, each site implements this to parse the Response Result from RequestBuilder's call to website. 
-	                             //Uses the response values to determine if the condition for this item is satisfied, if it is then call a function on the Reponse Result to generate a email template 
-								 //struct that can be passed to gmailer to send.
-	ReponseFilter *ResponseFilter 
+	RequestBuilder    *RequestBuilder //Per Site, each site implements this to customize header, auth, query params, etc Sents the query, and returns the Response Result or error
+	ResponseParser    *ResponseParser //Per Site, each site implements this to parse the Response Result from RequestBuilder's call to website.
+	//Uses the response values to determine if the condition for this item is satisfied, if it is then call a function on the Reponse Result to generate a email template
+	//struct that can be passed to gmailer to send.
+	ResponseFilter *ResponseFilter
 }
 
 type RequestUrlBuilder interface {
@@ -173,80 +176,196 @@ type RequestUrlBuilder interface {
 	//GetAvailabilityUrl(string) (string, error)
 }
 
-type ReqBuilder interface {
+type RequestBuilder interface {
 	//Makes request using URL and context provided in ReqParameter interface
-	FetchWithRequestParam(*http.Client, ReqParameter) (byte[], time.Time, error)
+	FetchWithRequestParam(*http.Client, RequestParameter) ([]byte, time.Time, error)
 }
 
 type ResponseParser interface {
 	//Parses the response body from Fetch (byte[]) and find all if it satisfies result of the query condition ItemQueryCondition. Gives ParseResponseBodyResponse if it does not error out.
-	ParseResponseMessage(byte[]) (ParseResponseBodyResult, error)
+	ParseResponseMessage([]byte) (ParseResponseBodyResult, error)
 }
 
-//Will be Implemented by ItemQueryCondition?
+// Will be Implemented by ItemQueryCondition?
 type ResponseFilter interface {
 	Filter(ParseResponseBodyResult, ItemQueryCondition) (bool, error)
 }
 
-type ReqParameter interface {
+type RequestParameter interface {
 	GetRequestContext() (context.Context, error)
 
 	GetRequestUrl() (string, error)
 }
 
 type RequestParameters struct {
-	requestContext context.Context
-	requestUrl string
+	RequestContext context.Context
+	RequestUrl     string
 }
 
-func (r *RequestParameters) RequestParameters(rContext, rUrl) RequestParameters {
-	return RequestParameters{requestContext: rContext, requestUrl:rUrl}
+func (r RequestParameters) RequestParameters(rContext context.Context, rUrl string) RequestParameters {
+	return RequestParameters{RequestContext: rContext, RequestUrl: rUrl}
 }
 
-func (r *requestParameters) GetRequestContext() (context.Context, error) {
-	return r.requestContext
+func (r RequestParameters) GetRequestContext() (context.Context, error) {
+	if r.RequestContext == nil {
+		return nil, errors.New("Error - No context provided for Request.")
+	}
+	return r.RequestContext, nil
 }
 
-func (r *requestParameters) GetRequestUrl() (string, error) {
-	if len(r.requestURL) == nil {
+func (r RequestParameters) GetRequestUrl() (string, error) {
+	if len(r.RequestUrl) == 0 {
 		return "", errors.New("Error - Empty URL was provided for Request URL.")
 	}
+	return r.RequestUrl, nil
 }
 
 type BestBuyRequestUrlBuilder struct {
-	Name string = "BestBuy"
+	Name   string //"BestBuy",
+	Scheme string //"https",
+	Host   string //"www.bestbuy.ca",
 	//API Url link GET
-	DomainURL string = "https://www.bestbuy.ca/api/v2/json/product/"
+	ProductURL      string //"/api/v2/json/product/{productNum}",
+	LocationUrl     string //"/api/v3/json/locations?lang=en-CA&postalCode={postalCodeFSA}",
+	AvailabilityUrl string //"/ecomm-api/availability/products?sku={productNum}&storeIds={storeId}&postalCode={postalCodeFSA}",
 }
 
-func (b *BestBuyReqBuilder) BestBuyReqBuilder(name string, domainUrl string) (BestBuyReqBuilder, error) {
+func (b *BestBuyRequestUrlBuilder) BestBuyRequestUrlBuilder(name string, scheme string, host string, ProductURL string, LocationUrl string, AvailabilityUrl string) (BestBuyRequestUrlBuilder, error) {
 	if len(name) == 0 {
-		return nil, errors.New("Error: name is Empty")
+		return BestBuyRequestUrlBuilder{}, errors.New("Error: name is Empty")
 	}
-	if len(domainUrl) == 0 {
-		return nil, errors.New("Error: Domain URL is Empty")
+	if len(scheme) == 0 {
+		return BestBuyRequestUrlBuilder{}, errors.New("Error: Scheme is Empty")
+	}
+	if len(host) == 0 {
+		return BestBuyRequestUrlBuilder{}, errors.New("Error: Host is Empty")
 	}
 
-	return BestBuyReqBuilder{Name: name, DomainURL:domainUrl,}, nil
+	return BestBuyRequestUrlBuilder{Name: name, Scheme: scheme, Host: host, ProductURL: ProductURL, LocationUrl: LocationUrl, AvailabilityUrl: AvailabilityUrl}, nil
 }
 
-func (b *BestBuyReqBuilder) GetProductUrl(productNum string) (string, error) {
-	val, err := strconv.Atoi(productNum)
+func (b *BestBuyRequestUrlBuilder) GetProductUrl(productNum string) (string, error) {
+	_, err := strconv.Atoi(productNum)
 	if len(productNum) == 0 || err != nil {
 		return "", fmt.Errorf("Error: Product Number: %s is invalid.", productNum)
 	}
-	return b.DomainURL + productNum, nil
+	u := &url.URL{
+		Scheme: b.Scheme,
+		Host:   b.Host,
+		Path:   fmt.Sprintf(b.ProductURL, productNum),
+	}
+	return u.String(), nil
+}
+
+func validateFSAConfigString(configStr string) error {
+	// Validate one or more allowed characters or ranges inside square brackets.
+	regexPattern := `^\[[A-Za-z0-9\-]+\]$`
+	if !regexp.MustCompile(regexPattern).MatchString(configStr) {
+		return fmt.Errorf("Error: Invalid FSA config string: %s", configStr)
+	}
+	return nil
+}
+
+func validatePostalCodeFSA(postalCodeFSA string) (bool, string, error) {
+	if len(postalCodeFSA) == 0 {
+		return false, "", errors.New("Error: Postal Code FSA is Empty")
+	}
+	if len(postalCodeFSA) != 3 {
+		return false, "", fmt.Errorf("Error: Postal Code FSA: %s is invalid, should be 3 characters.", postalCodeFSA)
+	}
+
+	//Move to config parameters
+	FSAAllowedFirstChar := "[ABCEGHJKLMNPRSTVXY]"
+	FSAAllowedSecondChar := "[0-9]"
+	FSAAllowedThirdChar := "[A-Z]"
+	//Validate the config string for FSA is of type [A-Za-z0-9]]
+	if err := validateFSAConfigString(FSAAllowedFirstChar); err != nil {
+		return false, "", err
+	}
+	if err := validateFSAConfigString(FSAAllowedSecondChar); err != nil {
+		return false, "", err
+	}
+	if err := validateFSAConfigString(FSAAllowedThirdChar); err != nil {
+		return false, "", err
+	}
+
+	//Create regex to validate FSA based on configed valid FSA values.
+	postalCodeFSARegex := regexp.MustCompile(fmt.Sprintf(`^%s%s%s$`, FSAAllowedFirstChar, FSAAllowedSecondChar, FSAAllowedThirdChar))
+	//String to Upper in case of user input lower case, and check regex match for valid FSA format.
+	result := postalCodeFSARegex.MatchString(strings.ToUpper(postalCodeFSA))
+
+	return result, postalCodeFSARegex.String(), nil
+}
+
+func (b *BestBuyRequestUrlBuilder) GetLocationsUrl(postalCodeFSA string) (string, error) {
+	valid, regexString, err := validatePostalCodeFSA(postalCodeFSA)
+	if err != nil {
+		return "", err
+	}
+	if !valid {
+		return "", fmt.Errorf("Error: Postal Code FSA: %s is invalid, should match regex: %s", postalCodeFSA, regexString)
+	}
+
+	u := &url.URL{
+		Scheme: b.Scheme,
+		Host:   b.Host,
+		Path:   b.LocationUrl,
+	}
+	q := u.Query()
+	q.Set("lang", "en-CA")
+	q.Set("postalCode", postalCodeFSA)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// Only uses the FSA of the postal code. FSA is the first 3 characters of the postal code which identifies the general area of the location.
+func (b *BestBuyRequestUrlBuilder) GetAvailabilityUrl(productNums []string, postalCodeFSA string, storeId []string) (string, error) {
+	if len(productNums) == 0 {
+		return "", errors.New("Error: Product Number list is Empty")
+	}
+
+	if valid, regexString, err := validatePostalCodeFSA(postalCodeFSA); err != nil {
+		return "", err
+	} else if !valid {
+		return "", fmt.Errorf("Error: Postal Code FSA: %s is invalid, should match regex: %s", postalCodeFSA, regexString)
+	}
+
+	if len(storeId) == 0 {
+		return "", errors.New("Error: Store ID list is Empty")
+	}
+
+	u := &url.URL{
+		Scheme: b.Scheme,
+		Host:   b.Host,
+		Path:   b.AvailabilityUrl,
+	}
+	q := u.Query()
+	q.Set("accept", "application/vnd.bestbuy.standardproduct.v1+json")
+	q.Set("accept-language", "en-CA")
+	q.Set("locations", strings.Join(storeId, "|"))
+	q.Set("postalCode", postalCodeFSA)
+	q.Set("skus", strings.Join(productNums, "|"))
+	q.Encode()
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 type BestBuyRequestBuilder struct {
 	Client *http.Client
 }
 
+func (b *BestBuyRequestBuilder) BestBuyRequestBuilder(client *http.Client) (BestBuyRequestBuilder, error) {
+	if client == nil {
+		return BestBuyRequestBuilder{}, errors.New("Error: HTTP Client is nil.")
+	}
+	return BestBuyRequestBuilder{Client: client}, nil
+}
+
 // Use a single http.Client to improve performance. Maintaning keep alive can avoid extra tcp handshakes
 // Can look to tune the http.Transport as well, such as IdleConnTimeout, MaxIdleConns, MaxIdleConnsPerHost, etc
-func (b *BestBuyReqBuilder) FetchWithRequestParam(client *http.Client, requestParams ReqParameter) ([]byte, time.Time, error) {
-	reqStartTime = time.Now()
-	
+func (b *BestBuyRequestBuilder) FetchWithRequestParam(client *http.Client, requestParams RequestParameter) ([]byte, time.Time, error) {
+	reqStartTime := time.Now()
+
 	reqContext, err := requestParams.GetRequestContext()
 	if err != nil {
 		return nil, reqStartTime, err
@@ -256,28 +375,38 @@ func (b *BestBuyReqBuilder) FetchWithRequestParam(client *http.Client, requestPa
 	if err != nil {
 		return nil, reqStartTime, err
 	}
-	
+
 	req, err := http.NewRequestWithContext(reqContext, http.MethodGet, reqUrl, nil)
 
-	if errors.Is(err, context.DeadlineExceeded) {
+	/* if errors.Is(err, context.DeadlineExceeded) {
 		return nil, reqStartTime, &FetchTimeOutError{
 			FailedMaxFetchTimeLimit: f.MaxFetchTimeLimit, //TODO
 		}
 	} else if err != nil {
 		return nil, reqStartTime, err
-	}
+	} */
 
 	//req.Header.Add()
 
+	// Add common browser headers to reduce chance the server rejects the request
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Language", "en-CA,en;q=0.9")
+	req.Header.Set("Referer", "https://www.bestbuy.ca/")
+
 	resp, err := client.Do(req)
 
-	if errors.Is(err, context.DeadlineExceeded) {
+	if err != nil {
+		return nil, reqStartTime, err
+	}
+
+	/* if errors.Is(err, context.DeadlineExceeded) {
 		return nil, &FetchTimeOutError{
 			FailedMaxFetchTimeLimit: f.MaxFetchTimeLimit, //TODO
 		}
 	} else if err != nil {
 		return nil, reqStartTime, err
-	}
+	} */
 	//defer after checking for error to avoid Body.Close() error which may occur when Do fails
 	defer resp.Body.Close()
 
@@ -303,12 +432,130 @@ func (b *BestBuyReqBuilder) FetchWithRequestParam(client *http.Client, requestPa
 
 }
 
-type BestBuyResponseParser {
-
+type BestBuyResponseParser struct {
 }
 
-func (b * BestBuyResponseParser) ParseResponseMessage(byte[]) (ParseResponseBodyResult, error) {
-	
+type Availability struct {
+	SKU                     string `json:"sku"`
+	InStoreAvailability     string `json:"inStoreAvailability"`
+	IsAvailableOnline       bool   `json:"isAvailableOnline"`
+	OnlineAvailability      string `json:"onlineAvailability"`
+	OnlineAvailabilityCount int    `json:"onlineAvailabilityCount"`
+}
+
+type Product struct {
+	Name         string       `json:"name"`
+	SKU          string       `json:"sku"`
+	RegularPrice float64      `json:"regularPrice"`
+	SalePrice    float64      `json:"salePrice"`
+	Seller       string       `json:"sellerId"`
+	Availability Availability `json:"availability"`
+}
+
+func (b *BestBuyResponseParser) ParseResponseMessage(respBody []byte) (ParseResponseBodyResult, error) {
+	if len(respBody) == 0 {
+		return ParseResponseBodyResult{}, errors.New("Error: Response body is empty.")
+	}
+	//ToDo
+	var p Product
+	if err := json.Unmarshal(respBody, &p); err != nil {
+		return ParseResponseBodyResult{}, err
+	}
+	parsedResponseResult := ParseResponseBodyResult{
+		ItemName:                p.Name,
+		OriginalPrice:           fmt.Sprintf("%.2f", p.RegularPrice),
+		DiscountAmount:          fmt.Sprintf("%.2f", p.RegularPrice-p.SalePrice),
+		PriceAfterDiscount:      fmt.Sprintf("%.2f", p.SalePrice),
+		Stock:                   fmt.Sprintf("In Store: %s, Online: %s (%d available)", p.Availability.InStoreAvailability, p.Availability.OnlineAvailability, p.Availability.OnlineAvailabilityCount),
+		QueryExecutionTimestamp: time.Now(),
+		Seller:                  p.Seller,
+	}
+	return parsedResponseResult, nil
+}
+
+type Store struct {
+	StoreID      string `json:"locationID"`
+	StoreName    string `json:"name"`
+	StoreAddress string `json:"address1"`
+}
+
+type Location struct {
+	Stores []Store `json:"locations"`
+}
+
+func (b *BestBuyResponseParser) ParseLocationResponseMessage(respBody []byte) ([]string, []Store, error) {
+	if len(respBody) == 0 {
+		return nil, nil, errors.New("Error: Response body is empty.")
+	}
+
+	// Process locations to extract store IDs
+	var location Location
+	if err := json.Unmarshal(respBody, &location); err != nil {
+		return nil, nil, err
+	}
+	stores := location.Stores
+	storeIds := make([]string, len(stores))
+	for i, store := range stores {
+		storeIds[i] = store.StoreID
+	}
+	return storeIds, stores, nil
+}
+
+type PickupLocationvAvailabilityDetail struct {
+	StoreName           string `json:"name"`
+	StoreID             string `json:"locationKey"`
+	QuantityOnHand      int    `json:"quantityOnHand"`
+	HasInventory        bool   `json:"hasInventory"`
+	SupportsFulfillment bool   `json:"supportsFulfillment"`
+	IsReservable        bool   `json:"isReservable"`
+}
+
+type PickupLocationAvailability struct {
+	Status                            string                              `json:"status"`
+	PickupLocationAvailabilityDetails []PickupLocationvAvailabilityDetail `json:"locations"`
+}
+
+type ShippingAvailabilityDetail struct {
+	CarrierName           string `json:"carrierName"`
+	DeliveryDtae          string `json:"deliveryDate"`
+	DeliveryDateExpiresOn string `json:"deliveryDateExpiresOn"`
+	DeliveryDatePrecision string `json:"deliveryDatePrecision"`
+}
+
+type ShippingAvailability struct {
+	Status                      string                       `json:"status"`
+	QuantityRemaining           int                          `json:"quantityRemaining"`
+	ShippingAvailabilityDetails []ShippingAvailabilityDetail `json:"levelsOfServices"`
+}
+
+type ProductAvailability struct {
+	SKU                        string                     `json:"sku"`
+	SellerID                   string                     `json:"sellerId"`
+	SaleChannelExclusivity     string                     `json:"saleChannelExclusivity"`
+	PickupLocationAvailability PickupLocationAvailability `json:"pickup"`
+	ShippingAvailability       ShippingAvailability       `json:"shipping"`
+}
+
+type ProductAvailabilitiesResponse struct {
+	ProductAvailabilities []ProductAvailability `json:"availabilities"`
+}
+
+func (b *BestBuyResponseParser) ParseAvailabilityResponseMessage(respBody []byte) (map[string]ProductAvailability, error) {
+	if len(respBody) == 0 {
+		return nil, errors.New("Error: Response body is empty.")
+	}
+
+	var response ProductAvailabilitiesResponse
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		return nil, err
+	}
+
+	availabilityMap := make(map[string]ProductAvailability)
+	for _, availability := range response.ProductAvailabilities {
+		availabilityMap[availability.SKU] = availability
+	}
+
+	return availabilityMap, nil
 }
 
 type FetchTimeOutError struct {
@@ -328,40 +575,40 @@ func (e *FetchResponseStatusError) Error() string {
 	return fmt.Sprintf("Server response unexpected: StatusCode: %d, Message: %s", e.StatusCode, e.StatusMessage)
 }
 
-
 type ParseResponseBodyResult struct {
-	ItemName string
-	OriginalPrice string
-	DiscountAmount string
-	PriceAfterDiscount string
-	Stock string
+	ItemName                string
+	OriginalPrice           string
+	DiscountAmount          string
+	PriceAfterDiscount      string
+	Stock                   string
+	Seller                  string
 	QueryExecutionTimestamp time.Time
-	QueryURL string
 }
 
 //func (p *ParseResponseBodyResult) GenerateEmailTemplate() {
 // --TODO Generates the necessary string fields gmailer to send email to user when query condition of the ResponseBody as parsed sucessfully.
 //}
 
-//Parse the ResponseBody based on query conditions (i.e. price, stock, etc).
-//Might need to implement a sub function for each condition whic reuslt in boolean, then ParseResponseMessage evaluates the overall condition based on the sub functions.
+// Parse the ResponseBody based on query conditions (i.e. price, stock, etc).
+// Might need to implement a sub function for each condition whic reuslt in boolean, then ParseResponseMessage evaluates the overall condition based on the sub functions.
 func (f *Fetcher) ParseResponseMessage(reponseBody []byte) (*ParseResponseBodyResult, error) {
-	return nil, error
+	return nil, nil
 }
 
-//Contains all the conditions for the item, each item have this struct. Site and URL then uniquely identifies each tracker.
+// Contains all the conditions for the item, each item have this struct. Site and URL then uniquely identifies each tracker.
 type ItemQueryCondition struct {
-	QueryURL string
-	PriceLowerBound float32
-	PriceUpperBound float32
-	InStockStatus bool
-	StockLowerBound int
-	StockUpperBound int
-	DiscountStatus bool
+	QueryURL           string
+	PriceLowerBound    float32
+	PriceUpperBound    float32
+	InStockStatus      bool
+	StockLowerBound    int
+	StockUpperBound    int
+	DiscountStatus     bool
 	DiscountLowerBound float32
 	DiscountUpperBound float32
 }
 
-func (i *ItemQueryCondition) ItemQueryStatus() (ItemQueryConditions, error) {
+func (i *ItemQueryCondition) ItemQueryStatus() (ItemQueryCondition, error) {
 	//creates tis based on json or other structured file format parsed for the file that stores this info
+	return *i, nil
 }
