@@ -1,0 +1,16 @@
+# Ignore compiled binaries
+siteFetcher
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Ignore build output
+bin/
+
+# Ignore IDE/editor files
+.DS_Store
+*.swp
+*.swo
+.vscode/
